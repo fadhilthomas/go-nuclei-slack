@@ -175,7 +175,7 @@ func createAttachment(name string, tags string, severity string, metric string, 
 func createBlock(summary SummaryReport) (block SlackBlockBody) {
 	summaryField := SlackBlockFieldBody{
 		Type: "mrkdwn",
-		Text: fmt.Sprintf("> *Open Vulnerability Summary*\n```Severity      Count\n-------------------\nCritical      %d\nHigh          %d\nMedium        %d\nLow           %d\nInfo          %d\n-------------------\nTotal         %d```", summary.Critical, summary.High, summary.Medium, summary.Low, summary.Info, summary.Critical+summary.High+summary.Medium+summary.Low+summary.Info),
+		Text: fmt.Sprintf("> *Open Vulnerability Summary*, @here \n```Severity      Count\n-------------------\nCritical      %d\nHigh          %d\nMedium        %d\nLow           %d\nInfo          %d\n-------------------\nTotal         %d```", summary.Critical, summary.High, summary.Medium, summary.Low, summary.Info, summary.Critical+summary.High+summary.Medium+summary.Low+summary.Info),
 	}
 
 	block = SlackBlockBody{
