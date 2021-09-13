@@ -123,7 +123,7 @@ func createAttachment(templateID string, name string, author string, tags string
 	}
 
 	matchedField := SlackFieldBody{
-		Title: "Matched",
+		Title: "Endpoint",
 		Value: matched,
 		Short: false,
 	}
@@ -151,7 +151,7 @@ func createAttachment(templateID string, name string, author string, tags string
 	}
 
 	var fieldList []SlackFieldBody
-	fieldList = append(fieldList, templateIDField, nameField, authorField, tagsField, scoreField, severityField, hostField, ipField, metricField, matchedField)
+	fieldList = append(fieldList, templateIDField, nameField, authorField, tagsField, hostField, ipField, scoreField, severityField, metricField, matchedField)
 
 	attachment = SlackAttachmentBody{
 		Fields: fieldList,
