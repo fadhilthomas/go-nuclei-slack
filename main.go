@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/fadhilthomas/go-nuclei-slack/config"
+	"github.com/fadhilthomas/go-nuclei-slack/model"
 	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
@@ -15,70 +16,21 @@ import (
 	"time"
 )
 
-type SlackRequestBody struct {
-	Title       string                `json:"title"`
-	Text        string                `json:"text"`
-	Attachments []SlackAttachmentBody `json:"attachments"`
-	Blocks      []SlackBlockBody      `json:"blocks"`
-}
-
-type SlackAttachmentBody struct {
-	Color  string           `json:"color"`
-	Fields []SlackFieldBody `json:"fields"`
-}
-
-type SlackBlockBody struct {
-	Type string              `json:"type"`
-	Text SlackBlockFieldBody `json:"text"`
-}
-
-type SlackFieldBody struct {
-	Title string `json:"title"`
-	Value string `json:"value"`
-	Short bool   `json:"short"`
-}
-
-type SlackBlockFieldBody struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type Output struct {
-	TemplateID string `json:"templateID"`
-	Info       struct {
-		Name           string      `json:"name"`
-		Author         []string    `json:"author"`
-		Tags           []string    `json:"tags"`
-		Reference      interface{} `json:"reference"`
-		Severity       string      `json:"severity"`
-		Classification struct {
-			CveID       interface{} `json:"cve-id"`
-			CweID       interface{} `json:"cwe-id"`
-			CvssMetrics string      `json:"cvss-metrics"`
-			CvssScore   float64     `json:"cvss-score"`
-		} `json:"classification"`
-	} `json:"info"`
-	Type      string    `json:"type"`
-	Host      string    `json:"host"`
-	Matched   string    `json:"matched"`
-	IP        string    `json:"ip"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-type SummaryReport struct {
-	Critical int
-	High     int
-	Medium   int
-	Low      int
-	Info     int
-}
+var (
+	attachmentList []model.SlackAttachmentBody
+	blockList []model.SlackBlockBody
+	vulnerabilityList []model.Output
+)
 
 func main() {
 	config.Set(config.LOG_LEVEL, "info")
 	webHookURL := config.GetStr(config.SLACK_TOKEN)
-	var attachmentList []SlackAttachmentBody
-	var blockList []SlackBlockBody
-	summary := SummaryReport{}
+
+	database := model.OpenDB()
+	if database == nil {
+		return
+	}
+	summary := model.SummaryReport{}
 
 	file, err := os.Open(config.GetStr(config.FILE_LOCATION))
 	if err != nil {
@@ -86,11 +38,13 @@ func main() {
 	}
 	fScanner := bufio.NewScanner(file)
 	for fScanner.Scan() {
-		result := &Output{}
-		err := json.Unmarshal([]byte(fScanner.Text()), result)
+		result := model.Output{}
+		err = json.Unmarshal([]byte(fScanner.Text()), &result)
 		if err != nil {
 			log.Error().Str("file", "slack").Err(err)
 		}
+
+		vulnerabilityList = append(vulnerabilityList, result)
 
 		switch result.Info.Severity {
 		case "critical":
@@ -104,7 +58,28 @@ func main() {
 		case "info":
 			summary.Info++
 		}
-		attachmentList = append(attachmentList, createAttachment(result.Info.Name, strings.Join(result.Info.Tags, ", "), result.Info.Severity, result.Info.Classification.CvssMetrics, strconv.FormatFloat(result.Info.Classification.CvssScore, 'f', -1, 64), result.Host, result.Matched))
+		sqlResult, _ := model.QueryVulnerability(database, result.TemplateID, result.Host)
+		if sqlResult == "new" {
+			log.Debug().Str("file", "main").Str("vulnerability name", result.TemplateID).Str("vulnerability host", result.Host).Msg("success")
+			err = model.InsertVulnerability(database, result.TemplateID, result.Host, "open")
+			if err != nil {
+				log.Error().Str("file", "main").Err(err)
+			}
+		}
+		summary.Host = result.Host
+		attachmentList = append(attachmentList, createAttachment(result.Info.Name, strings.Join(result.Info.Tags, ", "), result.Info.Severity, result.Info.Classification.CvssMetrics, strconv.FormatFloat(result.Info.Classification.CvssScore, 'f', -1, 64), result.Host, result.Matched, sqlResult))
+	}
+
+	err = model.UpdateVulnerabilityStatusAll(database)
+	if err != nil {
+		log.Error().Str("file", "main").Err(err)
+	}
+
+	for _, vulnerability := range vulnerabilityList {
+		err = model.UpdateVulnerabilityStatus(database, vulnerability.TemplateID, vulnerability.Host, "open")
+		if err != nil {
+			log.Error().Str("file", "main").Err(err)
+		}
 	}
 
 	blockList = append(blockList, createBlock(summary))
@@ -115,41 +90,47 @@ func main() {
 }
 
 //nolint:funlen
-func createAttachment(name string, tags string, severity string, metric string, score string, host string, matched string) (attachment SlackAttachmentBody) {
-	nameField := SlackFieldBody{
+func createAttachment(name string, tags string, severity string, metric string, score string, host string, matched string, status string) (attachment model.SlackAttachmentBody) {
+	nameField := model.SlackFieldBody{
 		Title: "Name",
-		Value: fmt.Sprintf("`%s`", name),
-		Short: true,
+		Value: fmt.Sprintf("%s", name),
+		Short: false,
 	}
 
-	tagsField := SlackFieldBody{
+	tagsField := model.SlackFieldBody{
 		Title: "Tags",
-		Value: tags,
+		Value: fmt.Sprintf("`%s`", tags),
 		Short: true,
 	}
 
-	metricField := SlackFieldBody{
-		Title: "CVSS Metric",
-		Value: fmt.Sprintf("%s - %s", score, metric),
-		Short: false,
-	}
-
-	hostField := SlackFieldBody{
-		Title: "Host",
-		Value: host,
-		Short: true,
-	}
-
-	matchedField := SlackFieldBody{
-		Title: "Endpoint",
-		Value: matched,
-		Short: false,
-	}
-
-	severityField := SlackFieldBody{
+	severityField := model.SlackFieldBody{
 		Title: "Severity",
-		Value: severity,
+		Value: fmt.Sprintf("`%s`", severity),
 		Short: true,
+	}
+
+	metricField := model.SlackFieldBody{
+		Title: "CVSS Metric",
+		Value: fmt.Sprintf("`%s - %s`", score, metric),
+		Short: false,
+	}
+
+	hostField := model.SlackFieldBody{
+		Title: "Host",
+		Value: fmt.Sprintf("`%s`", host),
+		Short: true,
+	}
+
+	statusField := model.SlackFieldBody{
+		Title: "Status",
+		Value: fmt.Sprintf("`%s`", status),
+		Short: true,
+	}
+
+	matchedField := model.SlackFieldBody{
+		Title: "Endpoint",
+		Value: fmt.Sprintf("`%s`", matched),
+		Short: false,
 	}
 
 	var color string
@@ -162,33 +143,33 @@ func createAttachment(name string, tags string, severity string, metric string, 
 		color = "good"
 	}
 
-	var fieldList []SlackFieldBody
-	fieldList = append(fieldList, nameField, tagsField, severityField, hostField, metricField, matchedField)
+	var fieldList []model.SlackFieldBody
+	fieldList = append(fieldList, nameField, tagsField, severityField, metricField, hostField, statusField, matchedField)
 
-	attachment = SlackAttachmentBody{
+	attachment = model.SlackAttachmentBody{
 		Fields: fieldList,
 		Color:  color,
 	}
 	return attachment
 }
 
-func createBlock(summary SummaryReport) (block SlackBlockBody) {
-	summaryField := SlackBlockFieldBody{
+func createBlock(summary model.SummaryReport) (block model.SlackBlockBody) {
+	summaryField := model.SlackBlockFieldBody{
 		Type: "mrkdwn",
-		Text: fmt.Sprintf("> *Open Vulnerability Summary*, @here \n```Severity      Count\n-------------------\nCritical      %d\nHigh          %d\nMedium        %d\nLow           %d\nInfo          %d\n-------------------\nTotal         %d```", summary.Critical, summary.High, summary.Medium, summary.Low, summary.Info, summary.Critical+summary.High+summary.Medium+summary.Low+summary.Info),
+		Text: fmt.Sprintf("> *Open Vulnerability Summary*, @here\n> *Host:* `%s`\n```Severity      Count\n-------------------\nCritical      %d\nHigh          %d\nMedium        %d\nLow           %d\nInfo          %d\n-------------------\nTotal         %d```", summary.Host, summary.Critical, summary.High, summary.Medium, summary.Low, summary.Info, summary.Critical+summary.High+summary.Medium+summary.Low+summary.Info),
 	}
 
-	block = SlackBlockBody{
+	block = model.SlackBlockBody{
 		Type: "section",
 		Text: summaryField,
 	}
 	return block
 }
 
-func sendSlackNotification(webHookURL string, attachmentList []SlackAttachmentBody, blockList []SlackBlockBody) error {
-	slackMessage := SlackRequestBody{
-		Title:       "Penetration Testing Report - Open Vulnerability",
-		Text:        "Penetration Testing Report - Open Vulnerability",
+func sendSlackNotification(webHookURL string, attachmentList []model.SlackAttachmentBody, blockList []model.SlackBlockBody) error {
+	slackMessage := model.SlackRequestBody{
+		Title:       "Open Vulnerability",
+		Text:        "Open Vulnerability",
 		Attachments: attachmentList,
 		Blocks:      blockList,
 	}
@@ -215,7 +196,7 @@ func sendSlackNotification(webHookURL string, attachmentList []SlackAttachmentBo
 	if err != nil {
 		return err
 	}
-	log.Debug().Str("file", "slack").Msg(buf.String())
+	log.Debug().Str("file", "main").Msg(buf.String())
 	if buf.String() != "ok" {
 		return errors.New("non-ok response returned from slack")
 	}
