@@ -4,5 +4,5 @@ go 1.16
 
 require (
 	github.com/mattn/go-sqlite3 v2.0.3+incompatible
-	github.com/rs/zerolog v1.31.0
+	github.com/rs/zerolog v1.32.0
 )
